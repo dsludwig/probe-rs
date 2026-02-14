@@ -33,6 +33,28 @@ mod ftdaye;
 use command_compacter::Command;
 use ftdaye::{ChipType, error::FtdiError};
 
+/// SWD pin configuration for MPSSE mode.
+///
+/// In SWD mode, ADBUS0 = SWCLK, ADBUS1 = SWDIO, ADBUS3 = typically active-low enable.
+struct SwdPinConfig {
+    /// GPIO direction byte when SWDIO is output: ADBUS0(CLK)+ADBUS1(DIO)+ADBUS3 = output.
+    dir_output: u8,
+    /// GPIO direction byte when SWDIO is input (tristate): ADBUS0(CLK)+ADBUS3 = output.
+    dir_input: u8,
+    /// Idle value for low byte GPIO pins.
+    idle_value: u8,
+}
+
+impl Default for SwdPinConfig {
+    fn default() -> Self {
+        Self {
+            dir_output: 0x0B, // ADBUS0 + ADBUS1 + ADBUS3 as outputs
+            dir_input: 0x09,  // ADBUS0 + ADBUS3 as outputs, ADBUS1 tristate
+            idle_value: 0x00,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct JtagAdapter {
     device: ftdaye::Device,
@@ -94,9 +116,9 @@ impl JtagAdapter {
         })
     }
 
-    pub fn attach(&mut self) -> Result<(), FtdiError> {
+    pub fn attach(&mut self, protocol: WireProtocol) -> Result<(), FtdiError> {
         self.device.usb_reset()?;
-        // 0x0B configures pins for JTAG
+        // 0x0B configures pins for JTAG/SWD (ADBUS0 + ADBUS1 + ADBUS3 as outputs)
         self.device.set_bitmode(0x0b, ftdaye::BitMode::Mpsse)?;
         self.device.set_latency_timer(1)?;
         self.device.usb_purge_buffers()?;
@@ -104,8 +126,18 @@ impl JtagAdapter {
         let mut junk = vec![];
         let _ = self.device.read_to_end(&mut junk);
 
-        let (output, direction) = self.pin_layout();
-        self.device.set_pins(output, direction)?;
+        match protocol {
+            WireProtocol::Jtag => {
+                let (output, direction) = self.jtag_pin_layout();
+                self.device.set_pins(output, direction)?;
+            }
+            WireProtocol::Swd => {
+                let swd_pins = self.swd_pin_config();
+                // Set low byte GPIO for SWD output mode
+                self.device
+                    .set_pins(swd_pins.idle_value as u16, swd_pins.dir_output as u16)?;
+            }
+        }
 
         self.apply_clock_speed(self.speed_khz)?;
 
@@ -114,8 +146,8 @@ impl JtagAdapter {
         Ok(())
     }
 
-    fn pin_layout(&self) -> (u16, u16) {
-        let (output, direction) = match (
+    fn jtag_pin_layout(&self) -> (u16, u16) {
+        match (
             self.device.vendor_id(),
             self.device.product_id(),
             self.device.product_string().unwrap_or(""),
@@ -132,16 +164,16 @@ impl JtagAdapter {
             // TMS starts high
             // TMS, TDO and TCK are outputs
             _ => (0x0008, 0x000b),
-        };
-        (output, direction)
+        }
+    }
+
+    fn swd_pin_config(&self) -> SwdPinConfig {
+        // Device-specific overrides can be added here by matching on
+        // (self.vendor_id, self.product_id, self.product_string).
+        SwdPinConfig::default()
     }
 
     fn speed_khz(&self) -> u32 {
-        self.speed_khz
-    }
-
-    fn set_speed_khz(&mut self, speed_khz: u32) -> u32 {
-        self.speed_khz = speed_khz;
         self.speed_khz
     }
 
@@ -228,13 +260,20 @@ impl JtagAdapter {
         Ok(())
     }
 
-    fn append_command(&mut self, command: Command) -> Result<(), DebugProbeError> {
-        tracing::trace!("Appending {:?}", command);
+    /// Ensures there is enough space in the command buffer for `needed` bytes.
+    /// If not, flushes the current buffer and reads any pending responses.
+    fn ensure_buffer_space(&mut self, needed: usize) -> Result<(), DebugProbeError> {
         // 1 byte is reserved for the send immediate command
-        if self.commands.len() + command.len() + 1 >= self.ftdi.buffer_size {
+        if self.commands.len() + needed + 1 >= self.ftdi.buffer_size {
             self.send_buffer()?;
             self.read_response()?;
         }
+        Ok(())
+    }
+
+    fn append_command(&mut self, command: Command) -> Result<(), DebugProbeError> {
+        tracing::trace!("Appending {:?}", command);
+        self.ensure_buffer_space(command.len())?;
 
         command.add_captured_bits(&mut self.in_bit_counts);
         command.encode(&mut self.commands);
@@ -284,6 +323,258 @@ impl JtagAdapter {
 
         Ok(std::mem::take(&mut self.in_bits))
     }
+
+    // ---- SWD I/O ----
+
+    /// Execute an SWD I/O sequence, translating `IoSequenceItem`s into MPSSE commands.
+    ///
+    /// Returns a `Vec<bool>` with one entry per item:
+    /// - `Output(_)` positions return `false`
+    /// - `Input` positions return the captured bit
+    fn swd_io_sequence<S>(&mut self, swdio: S) -> Result<Vec<bool>, DebugProbeError>
+    where
+        S: IntoIterator<Item = IoSequenceItem>,
+    {
+        let items: Vec<IoSequenceItem> = swdio.into_iter().collect();
+        if items.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let swd_pins = self.swd_pin_config();
+
+        // We'll track which items in the original sequence are Input items,
+        // and later fill in the captured bits.
+        let mut result = vec![false; items.len()];
+
+        // Group consecutive items by direction (Output vs Input) and process each run.
+        // Track which result indices correspond to Input items so we can fill them in.
+        let mut input_indices: Vec<usize> = Vec::new();
+
+        // Reset the command buffer state for SWD
+        self.commands.clear();
+        self.in_bit_counts.clear();
+        self.in_bits.truncate(0);
+
+        let mut i = 0;
+        while i < items.len() {
+            let is_output = matches!(items[i], IoSequenceItem::Output(_));
+
+            // Collect the run of same-direction items
+            let run_start = i;
+            while i < items.len() {
+                let item_is_output = matches!(items[i], IoSequenceItem::Output(_));
+                if item_is_output != is_output {
+                    break;
+                }
+                i += 1;
+            }
+            let run = &items[run_start..i];
+
+            if is_output {
+                // Set direction to output
+                self.swd_set_direction(&swd_pins, true)?;
+                self.swd_emit_output_run(run)?;
+            } else {
+                // Set direction to input
+                self.swd_set_direction(&swd_pins, false)?;
+                // Record which result indices are inputs
+                for idx in run_start..i {
+                    input_indices.push(idx);
+                }
+                self.swd_emit_input_run(run.len())?;
+            }
+        }
+
+        // Flush everything and read back
+        self.send_buffer()?;
+        self.read_response()?;
+
+        // Map captured bits back to input positions
+        let captured = std::mem::take(&mut self.in_bits);
+        if captured.len() != input_indices.len() {
+            return Err(DebugProbeError::Other(format!(
+                "SWD I/O: expected {} input bits, got {}",
+                input_indices.len(),
+                captured.len()
+            )));
+        }
+
+        for (bit_idx, &result_idx) in input_indices.iter().enumerate() {
+            result[result_idx] = captured[bit_idx];
+        }
+
+        Ok(result)
+    }
+
+    /// Emit an MPSSE command to set the SWDIO pin direction.
+    fn swd_set_direction(
+        &mut self,
+        pins: &SwdPinConfig,
+        output: bool,
+    ) -> Result<(), DebugProbeError> {
+        let direction = if output {
+            pins.dir_output
+        } else {
+            pins.dir_input
+        };
+        // MPSSE command 0x80: Set Data Bits Low Byte
+        let cmd = [0x80, pins.idle_value, direction];
+        self.ensure_buffer_space(cmd.len())?;
+        self.commands.extend_from_slice(&cmd);
+        Ok(())
+    }
+
+    /// Emit MPSSE write commands for a run of output bits.
+    fn swd_emit_output_run(&mut self, run: &[IoSequenceItem]) -> Result<(), DebugProbeError> {
+        // Pack output bits into bytes, LSB first
+        let mut bits: Vec<bool> = Vec::with_capacity(run.len());
+        for item in run {
+            match item {
+                IoSequenceItem::Output(val) => bits.push(*val),
+                IoSequenceItem::Input => unreachable!(),
+            }
+        }
+
+        let mut pos = 0;
+        let total = bits.len();
+
+        // Write full bytes (opcode 0x19: write bytes on -ve CLK, LSB first)
+        while pos + 8 <= total {
+            let byte_start = pos;
+            // Gather as many full bytes as we can
+            let mut bytes = Vec::new();
+            while pos + 8 <= total {
+                let mut byte_val: u8 = 0;
+                for bit_idx in 0..8 {
+                    if bits[pos + bit_idx] {
+                        byte_val |= 1 << bit_idx;
+                    }
+                }
+                bytes.push(byte_val);
+                pos += 8;
+
+                // Check buffer space: 3 header bytes + data bytes
+                if bytes.len() >= self.ftdi.buffer_size - self.commands.len() - 4 {
+                    break;
+                }
+            }
+
+            if !bytes.is_empty() {
+                let n = bytes.len() as u16 - 1;
+                let [n_low, n_high] = n.to_le_bytes();
+                let needed = 3 + bytes.len();
+                self.ensure_buffer_space(needed)?;
+                self.commands.extend_from_slice(&[0x19, n_low, n_high]);
+                self.commands.extend_from_slice(&bytes);
+            }
+
+            // If we broke out of the inner loop due to buffer space, we need to
+            // flush and continue
+            if pos < total && pos + 8 <= total && byte_start == pos {
+                break;
+            }
+        }
+
+        // Write remaining bits (opcode 0x1B: write bits on -ve CLK, LSB first)
+        let remaining = total - pos;
+        if remaining > 0 {
+            self.swd_emit_output_bits(&bits[pos..], remaining)?;
+        }
+
+        Ok(())
+    }
+
+    /// Emit MPSSE bit-write commands, handling the 7-bit FTDI bug.
+    fn swd_emit_output_bits(&mut self, bits: &[bool], count: usize) -> Result<(), DebugProbeError> {
+        let mut pos = 0;
+        let mut remaining = count;
+
+        // Avoid 7-bit transfers (FTDI bug): split into 6+1
+        if remaining == 7 {
+            let mut byte_val: u8 = 0;
+            for bit_idx in 0..6 {
+                if bits[pos + bit_idx] {
+                    byte_val |= 1 << bit_idx;
+                }
+            }
+            self.ensure_buffer_space(3)?;
+            self.commands.extend_from_slice(&[0x1B, 5, byte_val]);
+
+            pos += 6;
+            remaining -= 6;
+        }
+
+        if remaining > 0 {
+            let mut byte_val: u8 = 0;
+            for bit_idx in 0..remaining {
+                if bits[pos + bit_idx] {
+                    byte_val |= 1 << bit_idx;
+                }
+            }
+            self.ensure_buffer_space(3)?;
+            self.commands
+                .extend_from_slice(&[0x1B, remaining as u8 - 1, byte_val]);
+        }
+
+        Ok(())
+    }
+
+    /// Emit MPSSE read commands for a run of input bits.
+    ///
+    /// Uses -ve CLK edge for sampling (opcodes 0x2C/0x2E) to match the phase
+    /// shift behavior expected by the SWD polyfill. In SWD, the target drives
+    /// data on the rising edge and the host samples on the falling edge. This
+    /// means the turnaround bit sample already contains ACK[0], matching
+    /// the J-Link behavior that the polyfill is designed for.
+    fn swd_emit_input_run(&mut self, count: usize) -> Result<(), DebugProbeError> {
+        let mut remaining = count;
+
+        // Read full bytes (opcode 0x2C: read bytes on -ve CLK, LSB first)
+        while remaining >= 8 {
+            // Gather as many full bytes as we can read at once
+            let mut n_bytes = 0;
+            while remaining >= 8 {
+                n_bytes += 1;
+                remaining -= 8;
+
+                // Limit by buffer space (3 header bytes for the command)
+                if n_bytes >= self.ftdi.buffer_size - self.commands.len() - 4 {
+                    break;
+                }
+            }
+
+            if n_bytes > 0 {
+                let n = n_bytes as u16 - 1;
+                let [n_low, n_high] = n.to_le_bytes();
+                self.ensure_buffer_space(3)?;
+                self.commands.extend_from_slice(&[0x2C, n_low, n_high]);
+                // Each byte read produces one entry in in_bit_counts
+                for _ in 0..n_bytes {
+                    self.in_bit_counts.push(8);
+                }
+            }
+        }
+
+        // Read remaining bits (opcode 0x2E: read bits on -ve CLK, LSB first)
+        if remaining > 0 {
+            // Avoid 7-bit transfers (FTDI bug): split into 6+1
+            if remaining == 7 {
+                self.ensure_buffer_space(2)?;
+                self.commands.extend_from_slice(&[0x2E, 5]);
+                self.in_bit_counts.push(6);
+                remaining -= 6;
+            }
+
+            if remaining > 0 {
+                self.ensure_buffer_space(2)?;
+                self.commands
+                    .extend_from_slice(&[0x2E, remaining as u8 - 1]);
+                self.in_bit_counts.push(remaining);
+            }
+        }
+
+        Ok(())
+    }
 }
 
 /// A factory for creating [`FtdiProbe`] instances.
@@ -327,6 +618,7 @@ impl ProbeFactory for FtdiProbeFactory {
 
         let probe = FtdiProbe {
             adapter: JtagAdapter::open(ftdi, probes.pop().unwrap(), selector.interface)?,
+            protocol: WireProtocol::Jtag,
             jtag_state: JtagDriverState::default(),
             swd_settings: SwdSettings::default(),
         };
@@ -370,6 +662,7 @@ impl ProbeFactory for FtdiProbeFactory {
 #[derive(Debug)]
 pub struct FtdiProbe {
     adapter: JtagAdapter,
+    protocol: WireProtocol,
     jtag_state: JtagDriverState,
     swd_settings: SwdSettings,
 }
@@ -384,14 +677,18 @@ impl DebugProbe for FtdiProbe {
     }
 
     fn set_speed(&mut self, speed_khz: u32) -> Result<u32, DebugProbeError> {
-        Ok(self.adapter.set_speed_khz(speed_khz))
+        Ok(self.adapter.apply_clock_speed(speed_khz)?)
     }
 
     fn attach(&mut self) -> Result<(), DebugProbeError> {
-        tracing::debug!("Attaching...");
+        tracing::debug!("Attaching with protocol {:?}...", self.protocol);
 
-        self.adapter.attach()?;
-        self.select_target(0)
+        self.adapter.attach(self.protocol)?;
+
+        match self.protocol {
+            WireProtocol::Jtag => self.select_target(0),
+            WireProtocol::Swd => Ok(()),
+        }
     }
 
     fn detach(&mut self) -> Result<(), crate::Error> {
@@ -419,16 +716,16 @@ impl DebugProbe for FtdiProbe {
     }
 
     fn select_protocol(&mut self, protocol: WireProtocol) -> Result<(), DebugProbeError> {
-        if protocol != WireProtocol::Jtag {
-            Err(DebugProbeError::UnsupportedProtocol(protocol))
-        } else {
-            Ok(())
-        }
+        self.protocol = protocol;
+        Ok(())
     }
 
     fn active_protocol(&self) -> Option<WireProtocol> {
-        // Only supports JTAG
-        Some(WireProtocol::Jtag)
+        Some(self.protocol)
+    }
+
+    fn try_as_dap_probe(&mut self) -> Option<&mut dyn DapProbe> {
+        Some(self)
     }
 
     fn try_as_jtag_probe(&mut self) -> Option<&mut dyn JtagAccess> {
@@ -476,13 +773,11 @@ impl AutoImplementJtagAccess for FtdiProbe {}
 impl DapProbe for FtdiProbe {}
 
 impl RawSwdIo for FtdiProbe {
-    fn swd_io<S>(&mut self, _swdio: S) -> Result<Vec<bool>, DebugProbeError>
+    fn swd_io<S>(&mut self, swdio: S) -> Result<Vec<bool>, DebugProbeError>
     where
         S: IntoIterator<Item = IoSequenceItem>,
     {
-        Err(DebugProbeError::NotImplemented {
-            function_name: "swd_io",
-        })
+        self.adapter.swd_io_sequence(swdio)
     }
 
     fn swj_pins(
