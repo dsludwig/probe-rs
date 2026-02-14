@@ -1,0 +1,82 @@
+use std::time::Duration;
+
+use libftd2xx::{Ftdi, FtdiCommon};
+use nusb::DeviceInfo;
+
+use crate::probe::DebugProbeError;
+
+use super::{BitMode, FtdiDriver, Interface, Result, error::FtdiError};
+
+fn ft_status_to_lib_err(e: libftd2xx::FtStatus) -> FtdiError {
+    FtdiError::Other(format!("FTDI D2XX error: {e}"))
+}
+
+fn ft_status_to_io_err(e: libftd2xx::FtStatus) -> std::io::Error {
+    std::io::Error::other(format!("FTDI D2XX error: {e}"))
+}
+
+/// An FTDI driver using the proprietary D2XX driver.
+pub struct FtdiD2xx {
+    ft: Ftdi,
+}
+
+impl FtdiDriver for FtdiD2xx {
+    fn usb_reset(&mut self) -> Result<()> {
+        self.ft.reset().map_err(ft_status_to_lib_err)
+    }
+
+    fn usb_purge_buffers(&mut self) -> Result<()> {
+        self.ft.purge_all().map_err(ft_status_to_lib_err)
+    }
+
+    fn set_usb_timeouts(&mut self, read_timeout: Duration, write_timeout: Duration) -> Result<()> {
+        self.ft
+            .set_timeouts(read_timeout, write_timeout)
+            .map_err(ft_status_to_lib_err)
+    }
+
+    fn set_latency_timer(&mut self, value: u8) -> Result<()> {
+        self.ft
+            .set_latency_timer(Duration::from_millis(value as u64))
+            .map_err(ft_status_to_lib_err)
+    }
+
+    fn set_bitmode(&mut self, bitmask: u8, mode: BitMode) -> Result<()> {
+        self.ft
+            .set_bit_mode(bitmask, (mode as u8).into())
+            .map_err(ft_status_to_lib_err)
+    }
+
+    fn read_data(&mut self, data: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.ft.queue_status().map_err(ft_status_to_io_err)?;
+        if n == 0 {
+            return Ok(0);
+        }
+        self.ft.read(&mut data[..n]).map_err(ft_status_to_io_err)
+    }
+
+    fn write_data(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        self.ft.write(data).map_err(ft_status_to_io_err)
+    }
+}
+
+impl FtdiD2xx {
+    pub fn open(_usb_device: &DeviceInfo, interface: Interface) -> Result<Self, DebugProbeError> {
+        if interface != Interface::A {
+            return Err(DebugProbeError::NotImplemented {
+                function_name: "Non-default FTDI interfaces with D2XX",
+            });
+        }
+
+        // TODO: this just opens the first device, with no care to what
+        // `usb_device` actually is. FT_Open is very limited in its filter
+        // functionality.
+        let ft = Ftdi::new().map_err(|e| {
+            DebugProbeError::Usb(std::io::Error::other(format!(
+                "error opening FTDI D2XX device: {e}",
+            )))
+        })?;
+
+        Ok(Self { ft })
+    }
+}

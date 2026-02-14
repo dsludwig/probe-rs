@@ -19,6 +19,7 @@ default-run = "probe-rs"
 default = []
 # Include server/client functionality
 remote = ["dep:tokio-tungstenite", "dep:axum", "dep:rustls"]
+ftdi-d2xx = ["probe-rs/ftdi-d2xx"]
 
 [dependencies]
 anyhow = { workspace = true }

@@ -45,6 +45,11 @@ struct JtagAdapter {
     in_bit_counts: Vec<usize>,
     in_bits: BitVec,
     ftdi: FtdiProperties,
+
+    /// Device identity captured at open time (since Device no longer stores these).
+    vendor_id: u16,
+    product_id: u16,
+    product_string: Option<String>,
 }
 
 impl JtagAdapter {
@@ -75,6 +80,11 @@ impl JtagAdapter {
         usb_interface: Option<u8>,
     ) -> Result<Self, DebugProbeError> {
         let interface = Self::map_interface(usb_interface);
+
+        let vendor_id = usb_device.vendor_id();
+        let product_id = usb_device.product_id();
+        let product_string = usb_device.product_string().map(|s| s.to_string());
+
         let device = ftdaye::Builder::new()
             .with_interface(interface)
             .with_read_timeout(Duration::from_secs(5))
@@ -91,6 +101,9 @@ impl JtagAdapter {
             in_bit_counts: vec![],
             in_bits: BitVec::new(),
             ftdi,
+            vendor_id,
+            product_id,
+            product_string,
         })
     }
 
@@ -116,9 +129,9 @@ impl JtagAdapter {
 
     fn pin_layout(&self) -> (u16, u16) {
         let (output, direction) = match (
-            self.device.vendor_id(),
-            self.device.product_id(),
-            self.device.product_string().unwrap_or(""),
+            self.vendor_id,
+            self.product_id,
+            self.product_string.as_deref().unwrap_or(""),
         ) {
             // Digilent HS3
             (0x0403, 0x6014, "Digilent USB Device") => (0x2088, 0x308b),

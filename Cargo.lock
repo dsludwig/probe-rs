@@ -1386,6 +1386,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "42703706b716c37f96a77aea830392ad231f44c9e9a67872fa5548707e11b11c"
 
 [[package]]
+name = "ftdi-mpsse"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5dd2c246fb727197d284bf7273718ed6b1c9a94a128bb618b97f13daec658a12"
+dependencies = [
+ "static_assertions",
+]
+
+[[package]]
 name = "funty"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2317,6 +2326,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52ff2c0fe9bc6cb6b14a0592c2ff4fa9ceb83eea9db979b0487cd054946a2b8f"
 
 [[package]]
+name = "libftd2xx"
+version = "0.32.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f20d68b3138aaabb97edc3db8ed8f418d60f8abd2a7d8220d562906fb38ff08e"
+dependencies = [
+ "ftdi-mpsse",
+ "libftd2xx-ffi",
+ "log",
+ "paste",
+ "static_assertions",
+]
+
+[[package]]
+name = "libftd2xx-ffi"
+version = "0.8.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ebd82d23ae0cbbf0fb65ad0310b474e45ddfdece8aa03a34130c59c04333c701"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
 name = "libredox"
 version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3056,6 +3087,7 @@ dependencies = [
  "itertools 0.14.0",
  "itm",
  "jep106",
+ "libftd2xx",
  "nusb",
  "object 0.39.1",
  "parking_lot",
@@ -3689,7 +3721,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
