@@ -67,6 +67,10 @@ struct JtagAdapter {
     in_bit_counts: Vec<usize>,
     in_bits: BitVec,
     ftdi: FtdiProperties,
+
+    /// Whether the nRESET line (ADBUS4) is currently driven low (target held in reset).
+    /// Tracked so every low-byte GPIO write preserves the reset state.
+    nreset_asserted: bool,
 }
 
 impl JtagAdapter {
@@ -113,8 +117,13 @@ impl JtagAdapter {
             in_bit_counts: vec![],
             in_bits: BitVec::new(),
             ftdi,
+            nreset_asserted: false,
         })
     }
+
+    /// nRESET pin on the FT2232H Mini Module: ADBUS4 (`0x10`), brought out on CN2-14,
+    /// active-low, driven push-pull. This matches OpenOCD's `minimodule-swd.cfg`.
+    const NRESET_MASK: u8 = 0x10;
 
     pub fn attach(&mut self, protocol: WireProtocol) -> Result<(), FtdiError> {
         self.device.usb_reset()?;
@@ -133,9 +142,10 @@ impl JtagAdapter {
             }
             WireProtocol::Swd => {
                 let swd_pins = self.swd_pin_config();
-                // Set low byte GPIO for SWD output mode
-                self.device
-                    .set_pins(swd_pins.idle_value as u16, swd_pins.dir_output as u16)?;
+                // Set low byte GPIO for SWD output mode, preserving the nRESET level
+                // (it may already be asserted for a connect-under-reset attach).
+                let (value, direction) = self.swd_low_byte(&swd_pins, true);
+                self.device.set_pins(value as u16, direction as u16)?;
             }
         }
 
@@ -406,19 +416,57 @@ impl JtagAdapter {
         Ok(result)
     }
 
+    /// Compute the low-byte GPIO (value, direction) for SWD, folding in the
+    /// current nRESET level. nRESET (ADBUS4) is always an output; it is driven
+    /// low while reset is asserted and high otherwise (active-low, push-pull).
+    fn swd_low_byte(&self, pins: &SwdPinConfig, output: bool) -> (u8, u8) {
+        let direction = (if output { pins.dir_output } else { pins.dir_input }) | Self::NRESET_MASK;
+        let value = if self.nreset_asserted {
+            pins.idle_value & !Self::NRESET_MASK
+        } else {
+            pins.idle_value | Self::NRESET_MASK
+        };
+        (value, direction)
+    }
+
+    /// Drive the nRESET line (ADBUS4) for the active protocol. `asserted` holds
+    /// the target in reset (line low). Written immediately via a low-byte update.
+    fn set_nreset(
+        &mut self,
+        protocol: WireProtocol,
+        asserted: bool,
+    ) -> Result<(), DebugProbeError> {
+        self.nreset_asserted = asserted;
+
+        let (value, direction) = match protocol {
+            WireProtocol::Swd => self.swd_low_byte(&self.swd_pin_config(), true),
+            WireProtocol::Jtag => {
+                let (out, dir) = self.jtag_pin_layout();
+                let direction = dir as u8 | Self::NRESET_MASK;
+                let value = if asserted {
+                    out as u8 & !Self::NRESET_MASK
+                } else {
+                    out as u8 | Self::NRESET_MASK
+                };
+                (value, direction)
+            }
+        };
+
+        self.device
+            .set_pins(value as u16, direction as u16)
+            .map_err(FtdiError::from)?;
+        Ok(())
+    }
+
     /// Emit an MPSSE command to set the SWDIO pin direction.
     fn swd_set_direction(
         &mut self,
         pins: &SwdPinConfig,
         output: bool,
     ) -> Result<(), DebugProbeError> {
-        let direction = if output {
-            pins.dir_output
-        } else {
-            pins.dir_input
-        };
+        let (value, direction) = self.swd_low_byte(pins, output);
         // MPSSE command 0x80: Set Data Bits Low Byte
-        let cmd = [0x80, pins.idle_value, direction];
+        let cmd = [0x80, value, direction];
         self.ensure_buffer_space(cmd.len())?;
         self.commands.extend_from_slice(&cmd);
         Ok(())
@@ -696,23 +744,19 @@ impl DebugProbe for FtdiProbe {
     }
 
     fn target_reset(&mut self) -> Result<(), DebugProbeError> {
-        // TODO we could add this by using a GPIO. However, different probes may connect
-        // different pins (if any) to the reset line, so we would need to make this configurable.
-        Err(DebugProbeError::NotImplemented {
-            function_name: "target_reset",
-        })
+        self.target_reset_assert()?;
+        std::thread::sleep(Duration::from_millis(10));
+        self.target_reset_deassert()
     }
 
     fn target_reset_assert(&mut self) -> Result<(), DebugProbeError> {
-        Err(DebugProbeError::NotImplemented {
-            function_name: "target_reset_assert",
-        })
+        // Drives nRESET (ADBUS4) low. On probes that don't wire ADBUS4 to the
+        // target reset, this is a harmless no-op on an unconnected pin.
+        self.adapter.set_nreset(self.protocol, true)
     }
 
     fn target_reset_deassert(&mut self) -> Result<(), DebugProbeError> {
-        Err(DebugProbeError::NotImplemented {
-            function_name: "target_reset_deassert",
-        })
+        self.adapter.set_nreset(self.protocol, false)
     }
 
     fn select_protocol(&mut self, protocol: WireProtocol) -> Result<(), DebugProbeError> {
@@ -782,13 +826,28 @@ impl RawSwdIo for FtdiProbe {
 
     fn swj_pins(
         &mut self,
-        _pin_out: u32,
-        _pin_select: u32,
+        pin_out: u32,
+        pin_select: u32,
         _pin_wait: u32,
     ) -> Result<u32, DebugProbeError> {
-        Err(DebugProbeError::CommandNotSupportedByProbe {
-            command_name: "swj_pins",
-        })
+        // Only nRESET (bit 7) is wired to a GPIO (ADBUS4); the other SWJ pins
+        // (SWCLK/SWDIO/TDI/TDO/nTRST) are driven by the MPSSE engine and ignored here.
+        const NRESET: u32 = 1 << 7;
+
+        if pin_select & NRESET != 0 {
+            // The pin value is the electrical level of the (active-low) nRESET line:
+            // 0 = held low = target in reset, 1 = released.
+            let asserted = (pin_out & NRESET) == 0;
+            self.adapter.set_nreset(self.protocol, asserted)?;
+        }
+
+        // Report the current pin state. We drive nRESET push-pull, so the driven
+        // level is authoritative.
+        let mut state = 0;
+        if !self.adapter.nreset_asserted {
+            state |= NRESET;
+        }
+        Ok(state)
     }
 
     fn swd_settings(&self) -> &SwdSettings {
