@@ -25,9 +25,16 @@ pub(crate) struct FunctionDie<'data> {
     /// e.g. for the function name.
     /// See DWARF spec, 2.13.2.
     pub(crate) specification_die: Option<Die>,
-    /// Only present for inlined functions, where this is a reference
-    /// to the declaration of the function.
+    /// The abstract instance DIE, when the concrete DIE references one via
+    /// `DW_AT_abstract_origin`. Present for inlined subroutines and for concrete
+    /// out-of-line instances emitted by GCC (notably with `-flto`), where
+    /// attributes such as the function name live on the abstract instance rather
+    /// than on the concrete DIE itself.
     pub(crate) abstract_die: Option<Die>,
+    /// Whether this DIE is an inlined subroutine (`DW_TAG_inlined_subroutine`).
+    /// Tracked explicitly because `abstract_die` may also be populated for
+    /// non-inlined concrete instances, so its presence no longer implies inlining.
+    pub(crate) is_inline: bool,
     /// The address ranges for which this function is valid.
     pub(crate) ranges: Vec<Range<u64>>,
 }
@@ -105,12 +112,30 @@ impl<'a> FunctionDie<'a> {
             );
             Some(abstract_die)
         } else {
-            specification_die = debug_info.resolve_die_reference(
-                gimli::DW_AT_specification,
+            // A concrete out-of-line instance (common with `-flto`) carries its
+            // name and other attributes on an abstract instance referenced via
+            // `DW_AT_abstract_origin`, rather than on a `DW_AT_specification` of
+            // the concrete DIE. Resolve whichever is present so attribute lookups
+            // can follow the chain to the declaration.
+            if let Some(abstract_die) = debug_info.resolve_die_reference(
+                gimli::DW_AT_abstract_origin,
                 &function_die,
                 unit_info,
-            );
-            None
+            ) {
+                specification_die = debug_info.resolve_die_reference(
+                    gimli::DW_AT_specification,
+                    &abstract_die,
+                    unit_info,
+                );
+                Some(abstract_die)
+            } else {
+                specification_die = debug_info.resolve_die_reference(
+                    gimli::DW_AT_specification,
+                    &function_die,
+                    unit_info,
+                );
+                None
+            }
         };
 
         Ok(Some(Self {
@@ -118,6 +143,7 @@ impl<'a> FunctionDie<'a> {
             function_die,
             specification_die,
             abstract_die,
+            is_inline: is_inlined_function,
             ranges: die_ranges,
         }))
     }
@@ -143,7 +169,7 @@ impl<'a> FunctionDie<'a> {
 
     /// Returns whether this is an inlined function DIE reference.
     pub(crate) fn is_inline(&self) -> bool {
-        self.abstract_die.is_some()
+        self.is_inline
     }
 
     /// Returns the function name described by the die.

@@ -1,0 +1,1 @@
+Fixed function names showing as `<unknown function @ addr>` for concrete out-of-line instances emitted by GCC (notably with `-flto`), whose `DW_AT_name` is reached through `DW_AT_abstract_origin` rather than via the concrete DIE.
