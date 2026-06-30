@@ -21,6 +21,15 @@ impl ProgrammingLanguage for Cpp {
         memory: &mut dyn MemoryInterface,
         variable_cache: &VariableCache,
     ) -> VariableValue {
+        // C++ `bool` reads as an integer (via C), but should display as
+        // `true`/`false` rather than `1`/`0`.
+        if matches!(variable.type_name.inner(), VariableType::Base(name) if name == "bool")
+            && let VariableValue::Valid(value) =
+                C.read_variable_value(variable, memory, variable_cache)
+        {
+            let rendered = if value == "0" { "false" } else { "true" };
+            return VariableValue::Valid(rendered.to_string());
+        }
         C.read_variable_value(variable, memory, variable_cache)
     }
 

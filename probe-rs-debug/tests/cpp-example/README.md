@@ -61,13 +61,14 @@ The `efm32pg1b_cpp_unwind` snapshot intentionally captures current limitations:
 
 - **A mid-stack frame's function name is unresolved** (`<unknown function @
   0x…>`) even though its locals and source line resolve — a return-address →
-  function-name lookup gap.
-- **References render as pointers** (`int32_t&` shows as `int32_t*` with a
-  `*acc` child) — DWARF models references like pointers and we don't yet
-  distinguish them.
+  function-name lookup gap (likely not C++-specific).
 - **No polymorphism / vtable awareness** — a `Thermometer` accessed through a
-  `Sensor*` renders only the static `Sensor` base (its `id_`), not the dynamic
-  derived fields, and the vtable pointer is not shown.
+  `Sensor*` renders the (now flattened) `Sensor` base members but not the
+  dynamic derived fields, and the vtable pointer is not shown.
+
+Inheritance (base-class members flattened into the derived object), references
+(rendered as `T&`), and `bool` (`true`/`false`) are now handled and visible in
+the snapshot.
 
 ## Consumed by
 

@@ -283,6 +283,9 @@ pub enum VariableType {
     /// A Pointer is a variable that contains a reference to another variable, and the type of the
     /// referenced variable may not be known until the reference has been resolved.
     Pointer(Option<String>),
+    /// A C++ lvalue/rvalue reference. Resolved like a [`Pointer`](Self::Pointer) (it holds an
+    /// address to a referent), but rendered as `T&` rather than `T*`.
+    Reference(Option<String>),
     /// A Rust array.
     Array {
         /// The type name of the variable.
@@ -341,6 +344,7 @@ impl VariableType {
             VariableType::Enum(_) => "enum",
             VariableType::Namespace => "namespace",
             VariableType::Pointer(_) => "pointer",
+            VariableType::Reference(_) => "reference",
             VariableType::Array { .. } => "array",
             VariableType::Unknown => "unknown",
             VariableType::Other(_) => "other",
@@ -387,6 +391,10 @@ impl VariableType {
             VariableType::Pointer(pointee) => {
                 // TODO: we should also carry the constness
                 return language.format_pointer_type(pointee.as_deref());
+            }
+
+            VariableType::Reference(pointee) => {
+                return language.format_reference_type(pointee.as_deref());
             }
 
             VariableType::Array {
@@ -681,7 +689,10 @@ impl Variable {
         }
 
         if self.variable_node_type.is_deferred()
-            || matches!(self.type_name, VariableType::Pointer(_))
+            || matches!(
+                self.type_name,
+                VariableType::Pointer(_) | VariableType::Reference(_)
+            )
         {
             // And we have not previously assigned the value, then assign the type and address as
             // the value.
@@ -760,7 +771,7 @@ impl Variable {
 
         // Make sure we can safely unwrap() children.
         Some(match self.type_name.inner() {
-            VariableType::Pointer(_) => {
+            VariableType::Pointer(_) | VariableType::Reference(_) => {
                 format_pointer_value(variable_cache, indentation, first_child)
             }
             VariableType::Array { .. } => {

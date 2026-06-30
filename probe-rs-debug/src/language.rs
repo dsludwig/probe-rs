@@ -65,6 +65,12 @@ pub trait ProgrammingLanguage {
     }
     fn format_pointer_type(&self, pointee: Option<&str>) -> String;
 
+    /// Render a reference type. Only C++ emits `DW_TAG_reference_type`, so the
+    /// default `T&` form is sufficient for every language.
+    fn format_reference_type(&self, pointee: Option<&str>) -> String {
+        format!("{}&", pointee.unwrap_or("void"))
+    }
+
     fn format_function_name(
         &self,
         function_name: &str,

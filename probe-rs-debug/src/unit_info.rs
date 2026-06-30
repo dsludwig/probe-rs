@@ -636,6 +636,30 @@ impl UnitInfo {
                         )?;
                     }
                 }
+                gimli::DW_TAG_inheritance => {
+                    // C++ base classes. The base subobject's members are flattened
+                    // into the derived variable by recursing into the base type's
+                    // children with the same `parent_variable`, so e.g. a
+                    // `Thermometer` shows the `id_` it inherits from `Sensor`.
+                    //
+                    // NOTE: this assumes the base subobject is at offset 0 (single /
+                    // primary inheritance). A non-zero `DW_AT_data_member_location`
+                    // (multiple inheritance) is not yet applied to the base members.
+                    if let Some(AttributeValue::UnitRef(base_offset)) =
+                        child_node.entry().attr_value(gimli::DW_AT_type)
+                    {
+                        let mut base_tree = self.unit.entries_tree(Some(base_offset))?;
+                        let base_root = base_tree.root()?;
+                        self.process_tree(
+                            debug_info,
+                            base_root,
+                            parent_variable,
+                            memory,
+                            cache,
+                            frame_info,
+                        )?;
+                    }
+                }
                 gimli::DW_TAG_variant_part => {
                     // We need to recurse through the children, to find the DW_TAG_variant with discriminant matching
                     // the DW_TAG_variant, and ONLY add it's children to the parent variable.
@@ -1060,11 +1084,15 @@ impl UnitInfo {
             }
             // C++ lvalue/rvalue references are modelled in DWARF like pointers
             // (a DW_AT_type referent, holding an address), so we resolve them the
-            // same way as a pointer.
+            // same way as a pointer, but render them as `T&` rather than `T*`.
             gimli::DW_TAG_pointer_type
             | gimli::DW_TAG_reference_type
             | gimli::DW_TAG_rvalue_reference_type => {
-                child_variable.type_name = VariableType::Pointer(type_name);
+                child_variable.type_name = if node.tag() == gimli::DW_TAG_pointer_type {
+                    VariableType::Pointer(type_name)
+                } else {
+                    VariableType::Reference(type_name)
+                };
                 self.process_memory_location(
                     debug_info,
                     node,
@@ -2119,7 +2147,7 @@ impl UnitInfo {
         (matches!(child_variable.name, VariableName::Named(ref var_name) if var_name.starts_with('*'))
                 && matches!(parent_variable.role, VariantRole::VariantPart(_)))
             || matches!(&parent_variable.type_name, VariableType::Pointer(Some(pointer_name)) if pointer_name.starts_with('*'))
-            || (matches!(&parent_variable.type_name, VariableType::Pointer(_))
+            || (matches!(&parent_variable.type_name, VariableType::Pointer(_) | VariableType::Reference(_))
                 && (matches!(child_variable.type_name, VariableType::Base(_))
                     || matches!(child_variable.type_name, VariableType::Struct(ref type_name) if type_name.starts_with("&str"))
                     || matches!(child_variable.name, VariableName::Named(ref var_name) if var_name.starts_with('*'))

@@ -59,7 +59,7 @@ Child Variables:
             Named: valid
           type_name:
             Base: bool
-          value: "1"
+          value: "true"
           source_location:
             path: /cpp-example/main.cpp
             line: 131

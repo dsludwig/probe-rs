@@ -213,7 +213,7 @@ expression: stack_frames
     Child Variables:
       name: LocalScopeRoot
       type_name: Unknown
-      value: "<unknown> {\n\tsensor: Sensor* = Sensor* @ 0x20007FBC,\n\tacc: int32_t* = int32_t* @ 0x20007FB8,\n\treading: int32_t = 42,\n\tclamped: int32_t = 49}"
+      value: "<unknown> {\n\tsensor: Sensor* = Sensor* @ 0x20007FBC,\n\tacc: int32_t& = int32_t& @ 0x20007FB8,\n\treading: int32_t = 42,\n\tclamped: int32_t = 49}"
       children:
         - name:
             Named: sensor
@@ -249,8 +249,8 @@ expression: stack_frames
         - name:
             Named: acc
           type_name:
-            Pointer: int32_t
-          value: int32_t* @ 0x20007FB8
+            Reference: int32_t
+          value: int32_t& @ 0x20007FB8
           source_location:
             path: /cpp-example/firmware.cpp
             line: 67
@@ -496,13 +496,13 @@ expression: stack_frames
     Child Variables:
       name: LocalScopeRoot
       type_name: Unknown
-      value: "<unknown> {\n\tthermo: Thermometer* = Thermometer* @ 0x20007FD4,\n\tseed: int32_t = 7,\n\tstatus: Status = STATUS_OK,\n\tacc: int32_t = 49}"
+      value: "<unknown> {\n\tthermo: Thermometer& = Thermometer& @ 0x20007FD4,\n\tseed: int32_t = 7,\n\tstatus: Status = STATUS_OK,\n\tacc: int32_t = 49}"
       children:
         - name:
             Named: thermo
           type_name:
-            Pointer: Thermometer
-          value: Thermometer* @ 0x20007FD4
+            Reference: Thermometer
+          value: Thermometer& @ 0x20007FD4
           source_location:
             path: /cpp-example/firmware.cpp
             line: 81
@@ -516,6 +516,19 @@ expression: stack_frames
                 Struct: Thermometer
               value: Thermometer @ 0x20007FE8
               children:
+                - name:
+                    Named: id_
+                  type_name:
+                    Modified:
+                      - Typedef: int32_t
+                      - Base: long int
+                  value: "7"
+                  source_location:
+                    path: /cpp-example/firmware.cpp
+                    line: 33
+                    column:
+                      Column: 13
+                    address: ~
                 - name:
                     Named: unit_
                   type_name:
@@ -796,6 +809,19 @@ expression: stack_frames
               Column: 26
             address: ~
           children:
+            - name:
+                Named: id_
+              type_name:
+                Modified:
+                  - Typedef: int32_t
+                  - Base: long int
+              value: "7"
+              source_location:
+                path: /cpp-example/firmware.cpp
+                line: 33
+                column:
+                  Column: 13
+                address: ~
             - name:
                 Named: unit_
               type_name:
