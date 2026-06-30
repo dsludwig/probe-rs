@@ -1,0 +1,68 @@
+---
+source: probe-rs-debug/src/debug_info.rs
+assertion_line: 1500
+expression: static_variables
+---
+Child Variables:
+  name: StaticScopeRoot
+  type_name: Unknown
+  value: "<unknown> {\n\tg_unit: Unit = Kelvin,\n\tg_status: Status = STATUS_WARN,\n\tg_reading: Reading = Reading @ 0x0800131C}"
+  children:
+    - name:
+        Named: g_unit
+      type_name:
+        Enum: Unit
+      value: Kelvin
+      source_location:
+        path: /cpp-example/main.cpp
+        line: 137
+        column:
+          Column: 15
+        address: ~
+    - name:
+        Named: g_status
+      type_name:
+        Enum: Status
+      value: STATUS_WARN
+      source_location:
+        path: /cpp-example/main.cpp
+        line: 138
+        column:
+          Column: 17
+        address: ~
+    - name:
+        Named: g_reading
+      type_name:
+        Struct: Reading
+      value: Reading @ 0x0800131C
+      source_location:
+        path: /cpp-example/main.cpp
+        line: 139
+        column:
+          Column: 9
+        address: ~
+      children:
+        - name:
+            Named: raw
+          type_name:
+            Modified:
+              - Typedef: int32_t
+              - Base: long int
+          value: "1234"
+          source_location:
+            path: /cpp-example/main.cpp
+            line: 130
+            column:
+              Column: 13
+            address: ~
+        - name:
+            Named: valid
+          type_name:
+            Base: bool
+          value: "1"
+          source_location:
+            path: /cpp-example/main.cpp
+            line: 131
+            column:
+              Column: 10
+            address: ~

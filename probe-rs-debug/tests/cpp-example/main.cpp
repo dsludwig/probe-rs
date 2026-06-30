@@ -117,3 +117,23 @@ extern "C" void _start() {
     for (;;) {
     }
 }
+
+// --- Static-variable fixtures -------------------------------------------------
+//
+// Defined at the end of the file so adding/removing them never shifts the line
+// numbers or code addresses asserted by the breakpoint/demangling tests above.
+//
+// A plain class (DW_TAG_class_type, distinct from a `struct`'s
+// DW_TAG_structure_type) with mixed-type members.
+class Reading {
+public:
+    int32_t raw;
+    bool valid;
+};
+
+// Namespace-scope (static) variables: constant-initialized, so they live in
+// `.data` at fixed addresses and can be rendered by the test suite from a
+// MockMemory image without a live stack.
+sensors::Unit g_unit = sensors::Unit::Kelvin;    // scoped enum (enum class)
+sensors::Status g_status = sensors::STATUS_WARN; // unscoped enum
+Reading g_reading = {1234, true};                // class with members

@@ -845,7 +845,10 @@ impl UnitInfo {
                 gimli::DW_TAG_inlined_subroutine
                 | gimli::DW_TAG_base_type
                 | gimli::DW_TAG_pointer_type
+                | gimli::DW_TAG_reference_type
+                | gimli::DW_TAG_rvalue_reference_type
                 | gimli::DW_TAG_structure_type
+                | gimli::DW_TAG_class_type
                 | gimli::DW_TAG_enumeration_type
                 | gimli::DW_TAG_array_type
                 | gimli::DW_TAG_subroutine_type
@@ -1055,7 +1058,12 @@ impl UnitInfo {
                     frame_info,
                 )?;
             }
-            gimli::DW_TAG_pointer_type => {
+            // C++ lvalue/rvalue references are modelled in DWARF like pointers
+            // (a DW_AT_type referent, holding an address), so we resolve them the
+            // same way as a pointer.
+            gimli::DW_TAG_pointer_type
+            | gimli::DW_TAG_reference_type
+            | gimli::DW_TAG_rvalue_reference_type => {
                 child_variable.type_name = VariableType::Pointer(type_name);
                 self.process_memory_location(
                     debug_info,
@@ -1126,7 +1134,10 @@ impl UnitInfo {
                     }
                 }
             }
-            gimli::DW_TAG_structure_type => {
+            // C++ classes use DW_TAG_class_type; it is structurally identical to
+            // DW_TAG_structure_type (members, inheritance, etc.) and is handled
+            // the same way.
+            gimli::DW_TAG_structure_type | gimli::DW_TAG_class_type => {
                 self.extract_struct(
                     type_name,
                     debug_info,

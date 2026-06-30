@@ -1466,6 +1466,40 @@ mod test {
         }
     }
 
+    /// Renders C++ namespace-scope (static) variables from a MockMemory image,
+    /// without a coredump. Exercises the C++ type pipeline end to end:
+    /// `DW_TAG_class_type` member resolution, scoped (`enum class`) and unscoped
+    /// enum values, and base types -- all of which previously fell back to the
+    /// "unsupported language" handler. Fixture/addresses: `tests/cpp-example/`.
+    #[test]
+    fn cpp_static_variables() {
+        let debug_info = load_test_elf_as_debug_info("cpp-example/cpp-example.elf");
+
+        // `.data` image of the global fixtures, starting at 0x08001318:
+        //   g_unit    @ 0x08001318 : u8  = 2   (sensors::Unit::Kelvin)
+        //   g_status  @ 0x08001319 : u8  = 1   (sensors::STATUS_WARN)
+        //   (padding)  0x0800131a..c
+        //   g_reading @ 0x0800131c : { i32 raw = 1234; bool valid = true; }
+        // Little-endian words: 02 01 00 00 | d2 04 00 00 | 01 00 00 00
+        let mut memory = MockMemory::new();
+        memory.add_word_range(0x0800_1318, &[0x0000_0102, 0x0000_04d2, 0x0000_0001]);
+
+        let registers = DebugRegisters::default();
+        let mut static_variables = debug_info.create_static_scope_cache();
+        static_variables.recurse_deferred_variables(
+            &debug_info,
+            &mut memory,
+            10,
+            StackFrameInfo {
+                registers: &registers,
+                frame_base: None,
+                canonical_frame_address: None,
+            },
+        );
+
+        insta::assert_yaml_snapshot!("cpp_static_variables", static_variables);
+    }
+
     #[test]
     fn unwinding_first_instruction_after_exception() {
         let debug_info = load_test_elf_as_debug_info("exceptions");
