@@ -30,6 +30,27 @@ LDFLAGS  := -Wl,-Ttext=0x08000000 -Wl,-e,_start
 $(TARGET): $(SRC) Makefile
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $(SRC)
 
+# --- Hardware firmware fixture ------------------------------------------------
+# A *runnable* EFM32PG1B100F256GM32 image (proper vector table, startup, and
+# memory map) used to capture a real C++ coredump. Flashed and dumped via the
+# probe-rs CLI; see README.md.
+FW_TARGET := efm32pg1b_cpp_unwind.elf
+FW_SRC    := firmware.cpp
+FW_FLAGS  := -mcpu=cortex-m4 -mthumb \
+             -O0 -g3 -gdwarf-4 \
+             -ffreestanding -fno-exceptions -fno-rtti \
+             -fno-omit-frame-pointer \
+             -ffunction-sections -fdata-sections \
+             -ffile-prefix-map=$(CURDIR)=/cpp-example \
+             -nostdlib -nostartfiles
+FW_LDFLAGS := -T efm32pg1.ld -Wl,--gc-sections
+
+$(FW_TARGET): $(FW_SRC) efm32pg1.ld Makefile
+	$(CXX) $(FW_FLAGS) $(FW_LDFLAGS) -o $@ $(FW_SRC)
+
+.PHONY: firmware
+firmware: $(FW_TARGET)
+
 .PHONY: clean
 clean:
-	rm -f $(TARGET)
+	rm -f $(TARGET) $(FW_TARGET)

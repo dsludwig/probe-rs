@@ -2024,6 +2024,10 @@ mod test {
     #[test_case("esp32s3_esp_hal_panic"; "Xtensa unwinding on an esp32s3 in a panic handler")]
     #[test_case("esp32c6_coredump_elf"; "Unwind using a RISC-V coredump in ELF format")]
     #[test_case("esp32s3_coredump_elf"; "Unwind using an Xtensa coredump in ELF format")]
+    // C++ on Cortex-M4 (EFM32PG1B). Captured at a BKPT deep in a C++ call chain;
+    // documents both working unwinding/locals and current C++ shortcomings
+    // (see tests/cpp-example/README.md).
+    #[test_case("efm32pg1b_cpp_unwind"; "full_unwind Armv7-m C++ using EFM32PG1B")]
     fn full_unwind(test_name: &str) {
         let debug_info =
             load_test_elf_as_debug_info(format!("debug-unwind-tests/{test_name}.elf").as_str());
