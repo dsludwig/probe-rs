@@ -1437,6 +1437,35 @@ mod test {
         })
     }
 
+    /// C++ function names are recovered from the mangled `DW_AT_linkage_name`
+    /// and demangled to their fully-qualified signature (commit adds `cpp::Cpp`
+    /// language handler + demangling). Fixture: `tests/cpp-example/` built with
+    /// the pinned toolchain (see its README); addresses come from `nm`.
+    #[test]
+    fn cpp_function_names_are_demangled() {
+        let debug_info = load_test_elf_as_debug_info("cpp-example/cpp-example.elf");
+
+        // address -> expected demangled name
+        let cases = [
+            // Namespaced, qualified `const` member function.
+            (0x0800_0214, "sensors::Thermometer::read() const"),
+            // Overloaded free function (2-arg overload).
+            (0x0800_003a, "combine(long, long)"),
+            // Function template instantiation.
+            (0x0800_0288, "long clamp<long>(long, long, long)"),
+        ];
+
+        for (address, expected) in cases {
+            let (_unit, functions) = debug_info
+                .get_function_dies(address)
+                .unwrap_or_else(|e| panic!("no function DIE at {address:#x}: {e:?}"));
+            let name = functions[0]
+                .function_name(&debug_info)
+                .unwrap_or_else(|| panic!("no function name at {address:#x}"));
+            assert_eq!(name, expected, "demangled name mismatch at {address:#x}");
+        }
+    }
+
     #[test]
     fn unwinding_first_instruction_after_exception() {
         let debug_info = load_test_elf_as_debug_info("exceptions");

@@ -11,7 +11,7 @@ rust-version.workspace = true
 
 description = "Debugging functionality built on top of the probe-rs crate"
 
-exclude = ["tests/debug-unwind-tests"]
+exclude = ["tests/debug-unwind-tests", "tests/cpp-example"]
 
 [dependencies]
 addr2line = "0.26"

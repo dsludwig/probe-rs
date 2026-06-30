@@ -1,0 +1,1 @@
+Added a C++ language handler to the debugger. C++ compilation units now resolve their function names (demangled from the mangled linkage name, e.g. `sensors::Thermometer::read() const`) and read primitive variable values, instead of falling back to the "unsupported language" handler.

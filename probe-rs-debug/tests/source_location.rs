@@ -113,6 +113,45 @@ fn find_non_existing_unit_by_path() {
     );
 }
 
+/// Regression test for the C++ prologue heuristic (commit 37e5b487).
+///
+/// g++/clang++ omit `DW_LNS_set_prologue_end` from the line program, so before
+/// the heuristic was extended to C++ every instruction was classified as
+/// "prologue" and *no* valid breakpoint locations existed for any C++ function
+/// -- `get_breakpoint_location` returned an error for every line. This test
+/// pins that breakpoints can be placed inside representative C++ functions
+/// (free function, function template, member function, namespaced code).
+///
+/// The fixture is built from `tests/cpp-example/` with a pinned toolchain; see
+/// that directory's README for details.
+#[test]
+fn cpp_breakpoints_have_halt_locations() {
+    let di = DebugInfo::from_file("tests/cpp-example/cpp-example.elf").unwrap();
+
+    // comp_dir is neutralized to `/cpp-example` via -ffile-prefix-map.
+    let path = UnixPathBuf::from("/cpp-example/main.cpp").to_typed_path_buf();
+
+    // Lines inside C++ functions that must each resolve to a halt location.
+    // 77: `return value;`  inside the `clamp<T>` template
+    // 83: `return a + b;`  inside an overloaded free function
+    // 97: `thermo.update(42);`  member-function call inside `compute`
+    // 99: `int32_t total = thermo.read();`  inside `compute`
+    for line in [77, 83, 97, 99] {
+        let location = di
+            .get_breakpoint_location(path.to_path(), line, None)
+            .unwrap_or_else(|e| panic!("no breakpoint location for C++ line {line}: {e:?}"));
+
+        // The fixture is linked at 0x08000000; a resolved halt location must
+        // land in that executable range, proving a real (post-prologue)
+        // instruction address was found rather than nothing.
+        assert!(
+            location.address >= 0x0800_0000,
+            "breakpoint for line {line} resolved to unexpected address {:#x}",
+            location.address,
+        );
+    }
+}
+
 #[test]
 fn regression_pr2324() {
     let path = "C:\\_Hobby\\probe-rs-test-c-firmware/Atmel/hpl/core/hpl_init.c";
